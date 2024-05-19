@@ -1,0 +1,175 @@
+CREATE DATABASE train_management;
+\c train_management;
+
+CREATE TABLE train (
+  train_num integer NOT NULL,
+  date date NOT NULL,
+  ac_coaches integer NOT NULL,
+  sleeper_coaches integer NOT NULL
+);
+
+CREATE TABLE train_status (
+  train_num integer NOT NULL,
+  date date NOT NULL,
+  ac_seats integer NOT NULL,
+  sleeper_seats integer NOT NULL
+);
+
+CREATE TABLE passenger (
+  name varchar(50) NOT NULL,
+  pnr_no varchar(24) NOT NULL,
+  berth_no integer NOT NULL,
+  berth_type varchar(3) NOT NULL,
+  coach_no varchar(7) NOT NULL
+) ;
+
+CREATE TABLE ticket (
+  pnr_no varchar(24) NOT NULL,
+  coach_type varchar(3) NOT NULL,
+  train_num integer NOT NULL,
+  date date NOT NULL,
+  status varchar(10) NOT NULL,
+  num_passengers integer NOT NULL
+);
+
+CREATE OR REPLACE FUNCTION seat_availability(IN train_number integer,IN travel_date date, IN coach_type text)
+RETURNS integer AS $seats$
+DECLARE balance integer;
+BEGIN
+IF coach_type='AC' THEN
+   SELECT ac_seats FROM train_status WHERE train_num=train_number AND date=travel_date INTO balance;
+END IF;
+IF coach_type='SL' THEN
+    SELECT sleeper_seats FROM train_status WHERE train_num=train_number AND date=travel_date INTO balance;
+END IF;
+RETURN balance;
+END;
+$seats$
+LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION generate_pnr(IN train_num integer, IN date date, IN coach_type text, IN seats integer, IN status text) 
+RETURNS TEXT AS $rand_pnr$
+BEGIN
+RETURN RPAD(CONCAT(train_num, coach_type,date,'A',seats,status), 24, '0');
+END;
+$rand_pnr$
+LANGUAGE plpgsql;
+
+CREATE OR REPLACE PROCEDURE new_train (IN train_no integer,IN date DATE, IN ac integer, IN sleeper integer)
+AS $$
+    BEGIN
+        INSERT INTO TRAIN VALUES(train_no,date,ac,sleeper);
+        INSERT INTO train_status VALUES(train_no,date,ac*18,sleeper*24);
+    END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE PROCEDURE update_train_status (IN train_number integer, IN travel_date DATE, IN coach_type text, 
+IN num_passengers integer) AS $$
+BEGIN
+IF coach_type='AC' THEN
+   UPDATE train_status SET ac_seats = ac_seats- num_passengers WHERE train_num=train_number AND date=travel_date;
+END IF;
+IF coach_type='SL' THEN
+    UPDATE train_status SET sleeper_seats = sleeper_seats- num_passengers WHERE train_num=train_number AND date=travel_date;
+END IF;
+END;
+$$
+LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ac_berth_type(IN remainder integer) RETURNS TEXT AS $type$
+DECLARE type text;
+BEGIN
+IF remainder = 0 THEN 
+type='SU';
+ELSIF remainder = 1 OR remainder=2 THEN
+type='LB';
+ELSIF remainder = 3 OR remainder=4 THEN
+type= 'UB';
+ELSE 
+type = 'SL';
+END IF;
+RETURN type;
+END;
+$type$
+LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION sl_berth_type(IN remainder integer) RETURNS TEXT AS $type$
+DECLARE type text;
+BEGIN
+IF remainder = 0 THEN 
+type= 'SU';
+ELSIF remainder = 1 OR remainder=4 THEN
+type= 'LB';
+ELSIF remainder = 3 OR remainder=6 THEN
+type= 'UB';
+ELSIF remainder = 2 OR remainder=5 THEN
+type= 'MB';
+ELSE
+type= 'SL';
+END IF;
+RETURN type;
+END;
+$type$
+LANGUAGE plpgsql;
+
+CREATE OR REPLACE PROCEDURE insert_passengers (IN names text[], IN pnr text, IN seats integer, 
+IN coach_type text, IN num_passengers integer) AS $$
+DECLARE berth_no integer;
+berth_type text;
+coach_num integer;
+coach_no text;
+BEGIN
+FOR count in 1..num_passengers
+LOOP
+IF coach_type='AC' THEN
+   berth_no:=(seats-count)%18 +1;
+   berth_type:=ac_berth_type(berth_no%6);
+   coach_num:=(seats-count)/18 +1;
+   coach_no:= CONCAT('AC',coach_num);
+   INSERT INTO passenger VALUES(names[count],pnr,berth_no,berth_type,coach_no);
+END IF;
+IF coach_type='SL' THEN
+   berth_no:=(seats-count)%24 +1;
+   berth_type:=sl_berth_type(berth_no%8);
+   coach_num:=(seats-count)/24 +1;
+   coach_no:= CONCAT('SL',coach_num);
+   INSERT INTO passenger VALUES(names[count],pnr,berth_no,berth_type,coach_no);
+END IF;
+END LOOP;
+END;
+$$
+LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE PROCEDURE new_ticket (IN coach_type text,IN train_num integer, 
+IN date DATE, IN num_passengers integer, IN names text[])
+AS $$
+DECLARE pnr text;
+status text;
+remain_seats integer;
+BEGIN
+remain_seats:=seat_availability(train_num,date,coach_type);
+IF remain_seats >= num_passengers THEN 
+     status := 'SUCCESS';
+  ELSE
+     status := 'FAILED';
+  END IF;
+pnr:=generate_pnr(train_num,date,coach_type,remain_seats,status);
+IF status='SUCCESS' THEN
+     CALL update_train_status(train_num,date,coach_type,num_passengers);
+     CALL insert_passengers(names,pnr,remain_seats,coach_type,num_passengers);
+END IF;
+INSERT INTO ticket VALUES(pnr,coach_type,train_num,date,status,num_passengers);
+END ;
+$$
+LANGUAGE plpgsql ;
+
+
+/*TEST CASE*/
+CALL new_train(6461,'2022-12-27',15,25);
+CALL new_ticket('SL',6461,'2022-12-27',2, ARRAY ['SAMIR','SUMIT'] );
+
+******************************
+the java code is not made yet
+******************************
